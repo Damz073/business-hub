@@ -333,3 +333,31 @@ def hospitality_rates(current_user: dict = Depends(get_current_web_user)):
 def hospitality_rates_create(payload: ManualRatePayload, current_user: dict = Depends(get_current_web_user)):
     item = set_manual_rate(current_user['business_id'], payload.room_code, payload.rate_value, period=payload.period, note=payload.note)
     return {'ok': True, 'item': item}
+
+
+# ===== FASE 18 ROTAS =====
+from fastapi import Query
+
+@router.get('/reservations/calendar')
+def reservations_calendar(
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    current_user: dict = Depends(get_current_web_user),
+):
+    return get_reservations_calendar(
+        current_user["business_id"],
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+@router.get('/reservations/{reservation_id}')
+def reservation_detail(
+    reservation_id: int,
+    current_user: dict = Depends(get_current_web_user),
+):
+    item = get_reservation_detail(current_user["business_id"], reservation_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Reserva não encontrada")
+    return {"item": item}
+# ===== FIM ROTAS =====
+

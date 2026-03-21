@@ -948,3 +948,95 @@ def prompt_daily_rates_if_needed():
         upsert_bot_settings(business_id, last_rate_prompt_at=_now_iso())
         sent += 1
     return sent
+
+
+# ===== FASE 18 - CALENDARIO PMS =====
+from datetime import date, timedelta
+
+def calendar_status_color(status: str) -> str:
+    mapping = {
+        "confirmada": "confirmed",
+        "aguardando_pagamento": "pending_payment",
+        "lead": "pending_payment",
+        "cancelada": "problem",
+        "bloqueada": "blocked",
+        "checkin": "confirmed",
+        "checkout": "confirmed",
+    }
+    return mapping.get(status, "pending_payment")
+
+def get_reservation_detail(business_id: int, reservation_id: int):
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    row = cur.execute(
+        "SELECT * FROM reservation_requests WHERE id = ? AND business_id = ?",
+        (reservation_id, business_id),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return None
+
+    data = dict(row)
+    data["guests"] = deserialize_guests(data.get("guest_list_json"))
+
+    conn.close()
+    return data
+
+def get_reservations_calendar(business_id: int, start_date: str | None = None, end_date: str | None = None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    today = date.today()
+    start = date.fromisoformat(start_date) if start_date else today.replace(day=1)
+    end = date.fromisoformat(end_date) if end_date else (start + timedelta(days=30))
+
+    rooms = cur.execute(
+        "SELECT id, name, category FROM rooms WHERE business_id = ?",
+        (business_id,),
+    ).fetchall()
+
+    reservations = cur.execute(
+        '''
+        SELECT * FROM reservation_requests
+        WHERE business_id = ?
+        AND date(checkin_date) <= date(?)
+        AND date(checkout_date) >= date(?)
+        ''',
+        (business_id, end.isoformat(), start.isoformat()),
+    ).fetchall()
+
+    items = []
+    for row in reservations:
+        item = dict(row)
+        guests = deserialize_guests(item.get("guest_list_json"))
+        status = item.get("professional_status") or "lead"
+
+        items.append({
+            "id": item["id"],
+            "reservation_code": item.get("reservation_code"),
+            "room_label": item.get("unit_category"),
+            "main_guest_name": item.get("main_guest_name"),
+            "phone": item.get("main_guest_phone"),
+            "checkin": item.get("checkin_date"),
+            "checkout": item.get("checkout_date"),
+            "status": status,
+            "calendar_status": calendar_status_color(status),
+            "payment_status": item.get("payment_status"),
+            "total_value": item.get("total_value"),
+            "guests": guests,
+        })
+
+    conn.close()
+
+    return {
+        "range": {
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        },
+        "rooms": [dict(r) for r in rooms],
+        "items": items,
+    }
+# ===== FIM FASE 18 =====
+
