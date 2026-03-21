@@ -21,6 +21,7 @@ function getLinks(businessType: string) {
       { href: "/dashboard", label: "Dashboard", emoji: "◈" },
       { href: "/inbox", label: "Inbox", emoji: "◎" },
       { href: "/reservations", label: "Reservas", emoji: "◍" },
+      { href: "/reservations/map", label: "Mapa PMS", emoji: "◫" },
       { href: "/rooms", label: "Quartos", emoji: "▣" },
       { href: "/transactions", label: "Financeiro", emoji: "◌" },
       { href: "/crm", label: "CRM", emoji: "◒" },
@@ -47,10 +48,11 @@ export function AppShell({ user, children }: { user: AuthUser; children: React.R
   const [theme, setTheme] = useState<ThemeMode>("light");
 
   useEffect(() => {
-    const nextTheme: ThemeMode = 'light';
-    setTheme(nextTheme);
-    document.documentElement.setAttribute('data-theme', nextTheme);
-    if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, nextTheme);
+    const saved = typeof window !== 'undefined' ? (window.localStorage.getItem(THEME_KEY) as ThemeMode | null) : null;
+    const preferred: ThemeMode = saved === 'dark' || saved === 'light' ? saved : 'dark';
+    setTheme(preferred);
+    document.documentElement.setAttribute('data-theme', preferred);
+    if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, preferred);
   }, []);
 
   function toggleTheme() {

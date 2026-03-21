@@ -265,8 +265,36 @@ def _criar_tabelas_core(cursor):
         ('source', "TEXT DEFAULT 'panel'"),
         ('external_reservation_id', 'TEXT'),
         ('sync_status', "TEXT DEFAULT 'not_synced'"),
+        ('reservation_code', 'TEXT'),
+        ('professional_status', "TEXT DEFAULT 'lead'"),
+        ('total_value', 'REAL'),
+        ('notes_internal', 'TEXT'),
+        ('main_guest_name', 'TEXT'),
+        ('main_guest_phone', 'TEXT'),
+        ('guest_document', 'TEXT'),
+        ('guest_email', 'TEXT'),
+        ('guest_city', 'TEXT'),
+        ('car_plate', 'TEXT'),
+        ('estimated_arrival', 'TEXT'),
+        ('guest_list_json', 'TEXT'),
     ]:
         _garantir_coluna(cursor, 'reservation_requests', c, d)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS reservation_guests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reservation_request_id INTEGER NOT NULL,
+        name TEXT,
+        cpf TEXT,
+        phone TEXT,
+        email TEXT,
+        city TEXT,
+        car_plate TEXT,
+        is_main INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS payment_requests (

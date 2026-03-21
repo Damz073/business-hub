@@ -13,7 +13,8 @@ export type InboxItem = { id: number; customer_phone: string; customer_name?: st
 export type ChatMessage = { id: number; direction: string; sender_type: string; sender_phone?: string | null; message_type: string; text_content?: string | null; created_at?: string | null; };
 export type InboxResponse = { count: number; items: InboxItem[]; };
 export type ChatMessagesResponse = { session_id: number; items: ChatMessage[]; };
-export type ReservationItem = { id: number; guest_name?: string | null; guest_phone: string; checkin_date?: string | null; checkout_date?: string | null; guest_count?: number | null; unit_category?: string | null; quoted_amount?: number | null; status: string; payment_status: string; payment_reference?: string | null; human_confirmation_required?: number | boolean; finance_transaction_id?: number | null; source?: string | null; external_reservation_id?: string | null; sync_status?: string | null; notes?: string | null; created_at?: string | null; updated_at?: string | null; };
+export type ReservationGuest = { id?: number; name?: string | null; cpf?: string | null; phone?: string | null; email?: string | null; city?: string | null; car_plate?: string | null; is_main?: boolean | number | null; created_at?: string | null; updated_at?: string | null; };
+export type ReservationItem = { id: number; guest_name?: string | null; guest_phone: string; checkin_date?: string | null; checkout_date?: string | null; guest_count?: number | null; unit_category?: string | null; quoted_amount?: number | null; status: string; payment_status: string; payment_reference?: string | null; human_confirmation_required?: number | boolean; finance_transaction_id?: number | null; source?: string | null; external_reservation_id?: string | null; sync_status?: string | null; notes?: string | null; created_at?: string | null; updated_at?: string | null; reservation_code?: string | null; professional_status?: string | null; total_value?: number | null; notes_internal?: string | null; main_guest_name?: string | null; main_guest_phone?: string | null; guest_document?: string | null; guest_email?: string | null; guest_city?: string | null; car_plate?: string | null; estimated_arrival?: string | null; guests?: ReservationGuest[]; guest_summary?: string | null; legacy_status?: string | null; };
 export type ReservationResponse = { count: number; items: ReservationItem[]; };
 export type RoomTypeItem = { id: number; code: string; name: string; category?: string | null; capacity?: number | null; base_rate?: number | null; active?: number | boolean | null; notes?: string | null; quantity_total?: number | null; bed_setup?: string | null; max_adults?: number | null; max_children?: number | null; sort_order?: number | null; created_at?: string | null; updated_at?: string | null; };
 export type RoomTypeResponse = { count: number; items: RoomTypeItem[]; };
@@ -86,4 +87,29 @@ export type OccupancyMapItem = {
 export type OccupancyMapResponse = {
   count: number;
   items: OccupancyMapItem[];
+};
+
+export type ReservationCalendarItem = {
+  id: number;
+  reservation_code?: string | null;
+  room_id?: number | null;
+  room_name: string;
+  room_code?: string | null;
+  guest_name?: string | null;
+  checkin?: string | null;
+  checkout?: string | null;
+  status: string;
+  payment_status?: string | null;
+  total_value?: number | null;
+  source?: string | null;
+  guest_count?: number | null;
+  reservation: ReservationItem;
+};
+
+export type ReservationsCalendarResponse = {
+  start_date: string;
+  end_date: string;
+  rooms: RoomTypeItem[];
+  count: number;
+  items: ReservationCalendarItem[];
 };

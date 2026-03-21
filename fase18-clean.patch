@@ -1,0 +1,1098 @@
+diff --git a/app/database.py b/app/database.py
+--- a/app/database.py
++++ b/app/database.py
+@@ -265,10 +265,38 @@
+         ('source', "TEXT DEFAULT 'panel'"),
+         ('external_reservation_id', 'TEXT'),
+         ('sync_status', "TEXT DEFAULT 'not_synced'"),
++        ('reservation_code', 'TEXT'),
++        ('professional_status', "TEXT DEFAULT 'lead'"),
++        ('total_value', 'REAL'),
++        ('notes_internal', 'TEXT'),
++        ('main_guest_name', 'TEXT'),
++        ('main_guest_phone', 'TEXT'),
++        ('guest_document', 'TEXT'),
++        ('guest_email', 'TEXT'),
++        ('guest_city', 'TEXT'),
++        ('car_plate', 'TEXT'),
++        ('estimated_arrival', 'TEXT'),
++        ('guest_list_json', 'TEXT'),
+     ]:
+         _garantir_coluna(cursor, 'reservation_requests', c, d)
+ 
+     cursor.execute("""
++    CREATE TABLE IF NOT EXISTS reservation_guests (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        reservation_request_id INTEGER NOT NULL,
++        name TEXT,
++        cpf TEXT,
++        phone TEXT,
++        email TEXT,
++        city TEXT,
++        car_plate TEXT,
++        is_main INTEGER DEFAULT 0,
++        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
++        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
++    )
++    """)
++
++    cursor.execute("""
+     CREATE TABLE IF NOT EXISTS payment_requests (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         business_id INTEGER NOT NULL,
+diff --git a/app/modules/hospitality/router.py b/app/modules/hospitality/router.py
+--- a/app/modules/hospitality/router.py
++++ b/app/modules/hospitality/router.py
+@@ -1,4 +1,4 @@
+-from fastapi import APIRouter, Depends, HTTPException
++from fastapi import APIRouter, Depends, HTTPException, Query
+ from pydantic import BaseModel
+ 
+ from app.api_auth import get_current_web_user
+@@ -8,6 +8,8 @@
+     confirm_reservation_payment,
+     criar_reserva_manual,
+     inventory_snapshot,
++    get_reservation_detail,
++    get_reservations_calendar,
+     get_chat_messages_for_business,
+     list_chat_messages,
+     list_manual_rates,
+@@ -18,6 +20,8 @@
+     manual_rates_status_text,
+     obter_hospitality_summary,
+     release_session,
++    update_reservation,
++    cancel_reservation,
+     send_manual_message,
+     set_manual_rate,
+     upsert_room_type,
+@@ -27,6 +31,16 @@
+ router = APIRouter(prefix='/hospitality', tags=['hospitality'])
+ 
+ 
++class ReservationGuestPayload(BaseModel):
++    name: str | None = None
++    cpf: str | None = None
++    phone: str | None = None
++    email: str | None = None
++    city: str | None = None
++    car_plate: str | None = None
++    is_main: bool | None = False
++
++
+ class ReservationCreatePayload(BaseModel):
+     guest_name: str
+     guest_phone: str
+@@ -39,6 +53,45 @@
+     source: str | None = 'panel'
+     external_reservation_id: str | None = None
+     sync_status: str | None = 'not_synced'
++    reservation_code: str | None = None
++    total_value: float | None = None
++    notes_internal: str | None = None
++    main_guest_name: str | None = None
++    main_guest_phone: str | None = None
++    guest_document: str | None = None
++    guest_email: str | None = None
++    guest_city: str | None = None
++    car_plate: str | None = None
++    estimated_arrival: str | None = None
++    guests: list[ReservationGuestPayload] | None = None
++
++
++class ReservationUpdatePayload(BaseModel):
++    guest_name: str | None = None
++    guest_phone: str | None = None
++    checkin_date: str | None = None
++    checkout_date: str | None = None
++    guest_count: int | None = None
++    unit_category: str | None = None
++    quoted_amount: float | None = None
++    status: str | None = None
++    payment_status: str | None = None
++    notes: str | None = None
++    source: str | None = None
++    external_reservation_id: str | None = None
++    sync_status: str | None = None
++    reservation_code: str | None = None
++    professional_status: str | None = None
++    total_value: float | None = None
++    notes_internal: str | None = None
++    main_guest_name: str | None = None
++    main_guest_phone: str | None = None
++    guest_document: str | None = None
++    guest_email: str | None = None
++    guest_city: str | None = None
++    car_plate: str | None = None
++    estimated_arrival: str | None = None
++    guests: list[ReservationGuestPayload] | None = None
+ 
+ 
+ class BotSettingsPayload(BaseModel):
+@@ -170,6 +223,41 @@
+     return {'count': len(items), 'items': items}
+ 
+ 
++@router.get('/reservations/calendar')
++def hospitality_reservations_calendar(
++    start_date: str | None = Query(default=None),
++    end_date: str | None = Query(default=None),
++    current_user: dict = Depends(get_current_web_user),
++):
++    return get_reservations_calendar(current_user['business_id'], start_date=start_date, end_date=end_date)
++
++
++@router.get('/reservations/{reservation_id}')
++def hospitality_reservation_detail(reservation_id: int, current_user: dict = Depends(get_current_web_user)):
++    item = get_reservation_detail(current_user['business_id'], reservation_id)
++    if not item:
++        raise HTTPException(status_code=404, detail='Reserva não encontrada.')
++    return {'item': item}
++
++
++@router.put('/reservations/{reservation_id}')
++def hospitality_reservation_update(reservation_id: int, payload: ReservationUpdatePayload, current_user: dict = Depends(get_current_web_user)):
++    try:
++        item = update_reservation(current_user['business_id'], reservation_id, **payload.model_dump(exclude_none=True))
++        return {'ok': True, 'item': item}
++    except ValueError as e:
++        raise HTTPException(status_code=404, detail=str(e))
++
++
++@router.post('/reservations/{reservation_id}/cancel')
++def hospitality_reservation_cancel(reservation_id: int, payload: ReservationUpdatePayload, current_user: dict = Depends(get_current_web_user)):
++    try:
++        item = cancel_reservation(current_user['business_id'], reservation_id, reason=payload.notes_internal or payload.notes)
++        return {'ok': True, 'item': item}
++    except ValueError as e:
++        raise HTTPException(status_code=404, detail=str(e))
++
++
+ @router.post('/reservations')
+ def hospitality_reservation_create(payload: ReservationCreatePayload, current_user: dict = Depends(get_current_web_user)):
+     item = criar_reserva_manual(current_user['business_id'], **payload.model_dump())
+diff --git a/app/modules/hospitality/service.py b/app/modules/hospitality/service.py
+--- a/app/modules/hospitality/service.py
++++ b/app/modules/hospitality/service.py
+@@ -2,6 +2,9 @@
+ 
+ from datetime import date, datetime, timedelta
+ from typing import Optional
++import random
++import string
++import json
+ 
+ from app.core_services import (
+     ensure_chat_session,
+@@ -14,6 +17,173 @@
+ from app.storage import salvar_transacao
+ from app.whatsapp_api import enviar_mensagem_texto
+ 
++
++
++PROFESSIONAL_STATUS_MAP = {
++    'lead': 'lead',
++    'quoted': 'aguardando_pagamento',
++    'confirmada': 'confirmada',
++    'checkin': 'checkin',
++    'checkout': 'checkout',
++    'cancelada': 'cancelada',
++    'bloqueada': 'bloqueada',
++}
++
++
++def _generate_reservation_code() -> str:
++    return 'RES-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
++
++
++def _normalize_reservation_source(source: str | None) -> str:
++    raw = (source or 'whatsapp').strip().lower()
++    mapping = {
++        'panel': 'balcao',
++        'admin_manual': 'balcao',
++        'manual': 'balcao',
++        'desk': 'balcao',
++        'frontdesk': 'balcao',
++        'pms_voa': 'site',
++    }
++    return mapping.get(raw, raw or 'whatsapp')
++
++
++def _normalize_reservation_status(status: str | None, payment_status: str | None = None) -> str:
++    raw = (status or '').strip().lower()
++    if raw in {'lead', 'aguardando_pagamento', 'confirmada', 'checkin', 'checkout', 'cancelada', 'bloqueada'}:
++        return raw
++    if raw == 'quoted':
++        return 'aguardando_pagamento'
++    if raw == 'canceled':
++        return 'cancelada'
++    if raw == 'confirmed':
++        return 'confirmada'
++    if raw == 'blocked':
++        return 'bloqueada'
++    if raw == 'pending_payment':
++        return 'aguardando_pagamento'
++    if (payment_status or '').lower() == 'confirmado':
++        return 'confirmada'
++    return 'lead'
++
++
++def _serialize_guests(guests: list[dict] | None) -> str:
++    return json.dumps(guests or [], ensure_ascii=False)
++
++
++def _deserialize_guests(raw) -> list[dict]:
++    if not raw:
++        return []
++    try:
++        data = json.loads(raw)
++        return data if isinstance(data, list) else []
++    except Exception:
++        return []
++
++
++def _build_guest_records(main_name: str | None, main_phone: str | None, main_email: str | None = None, guests: list[dict] | None = None, cpf: str | None = None, city: str | None = None, car_plate: str | None = None):
++    records: list[dict] = []
++    if main_name or main_phone or main_email or cpf or city or car_plate:
++        records.append({
++            'name': main_name,
++            'phone': main_phone,
++            'email': main_email,
++            'cpf': cpf,
++            'city': city,
++            'car_plate': car_plate,
++            'is_main': True,
++        })
++    for guest in guests or []:
++        if not isinstance(guest, dict):
++            continue
++        item = {
++            'name': guest.get('name') or guest.get('nome'),
++            'phone': guest.get('phone') or guest.get('telefone'),
++            'email': guest.get('email'),
++            'cpf': guest.get('cpf'),
++            'city': guest.get('city') or guest.get('cidade'),
++            'car_plate': guest.get('car_plate') or guest.get('placa_do_carro') or guest.get('placa'),
++            'is_main': bool(guest.get('is_main')),
++        }
++        if any(item.values()):
++            records.append(item)
++    return records
++
++
++def _replace_reservation_guests(cur, reservation_id: int, main_name: str | None, main_phone: str | None, main_email: str | None = None, guests: list[dict] | None = None, cpf: str | None = None, city: str | None = None, car_plate: str | None = None):
++    cur.execute('DELETE FROM reservation_guests WHERE reservation_request_id = ?', (reservation_id,))
++    for guest in _build_guest_records(main_name, main_phone, main_email, guests=guests, cpf=cpf, city=city, car_plate=car_plate):
++        cur.execute(
++            """
++            INSERT INTO reservation_guests (
++                reservation_request_id, name, cpf, phone, email, city, car_plate, is_main, created_at, updated_at
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
++            """,
++            (reservation_id, guest.get('name'), guest.get('cpf'), guest.get('phone'), guest.get('email'), guest.get('city'), guest.get('car_plate'), 1 if guest.get('is_main') else 0),
++        )
++
++
++def _fetch_reservation_guests(cur, reservation_id: int):
++    cur.execute(
++        """
++        SELECT id, name, cpf, phone, email, city, car_plate, is_main, created_at, updated_at
++        FROM reservation_guests
++        WHERE reservation_request_id = ?
++        ORDER BY is_main DESC, id ASC
++        """,
++        (reservation_id,),
++    )
++    return [dict(r) for r in cur.fetchall()]
++
++
++def _enrich_reservation(row: dict, cur):
++    item = dict(row)
++    item['source'] = _normalize_reservation_source(item.get('source'))
++    item['status'] = _normalize_reservation_status(item.get('professional_status') or item.get('status'), item.get('payment_status'))
++    item['legacy_status'] = item.get('status')
++    item['professional_status'] = item['status']
++    item['reservation_code'] = item.get('reservation_code') or f"RES-{item['id']:06d}"
++    item['total_value'] = float(item.get('total_value') or item.get('quoted_amount') or 0)
++    item['quoted_amount'] = float(item.get('quoted_amount') or item.get('total_value') or 0)
++    item['main_guest_name'] = item.get('main_guest_name') or item.get('guest_name')
++    item['main_guest_phone'] = item.get('main_guest_phone') or item.get('guest_phone')
++    item['guest_document'] = item.get('guest_document')
++    item['guest_email'] = item.get('guest_email')
++    item['guest_city'] = item.get('guest_city')
++    item['car_plate'] = item.get('car_plate')
++    item['estimated_arrival'] = item.get('estimated_arrival')
++    item['notes_internal'] = item.get('notes_internal')
++    item['guest_list_json'] = item.get('guest_list_json') or '[]'
++    guests = _fetch_reservation_guests(cur, item['id'])
++    if not guests:
++        guests = _build_guest_records(item.get('main_guest_name') or item.get('guest_name'), item.get('main_guest_phone') or item.get('guest_phone'), item.get('guest_email'), guests=_deserialize_guests(item.get('guest_list_json')), cpf=item.get('guest_document'), city=item.get('guest_city'), car_plate=item.get('car_plate'))
++    item['guests'] = guests
++    item['guest_summary'] = ', '.join([g.get('name') for g in guests if g.get('name')][:3]) or (item.get('main_guest_name') or item.get('guest_name') or item.get('guest_phone'))
++    return item
++
++
++def get_reservation_detail(business_id: int, reservation_id: int):
++    conn = conectar(); cur = conn.cursor()
++    cur.execute(
++        """
++        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
++               unit_category, quoted_amount, status, payment_status, payment_reference, human_confirmation_required,
++               notes, finance_transaction_id, source, external_reservation_id, sync_status, created_at, updated_at,
++               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
++               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
++        FROM reservation_requests
++        WHERE id = ? AND business_id = ? LIMIT 1
++        """,
++        (reservation_id, business_id),
++    )
++    row = cur.fetchone()
++    if not row:
++        conn.close()
++        return None
++    item = _enrich_reservation(dict(row), cur)
++    conn.close()
++    return item
++
++
+ DEFAULT_ROOM_TYPES = [
+     {'code': 'STD-CASAL', 'name': 'Standard Casal', 'category': 'standard', 'capacity': 2, 'base_rate': 260.0, 'quantity_total': 8, 'bed_setup': '1 cama casal', 'notes': 'Tipologia padrão sugerida para o MVP.'},
+     {'code': 'STD-TWIN', 'name': 'Standard Twin', 'category': 'standard', 'capacity': 2, 'base_rate': 260.0, 'quantity_total': 6, 'bed_setup': '2 camas solteiro', 'notes': 'Tipologia padrão sugerida para o MVP.'},
+@@ -260,17 +430,22 @@
+ def listar_reservas(business_id: int, status: str | None = None):
+     conn = conectar(); cur = conn.cursor()
+     query = """
+-        SELECT id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
++        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
+                unit_category, quoted_amount, status, payment_status, payment_reference,
+                human_confirmation_required, notes, finance_transaction_id, source,
+-               external_reservation_id, sync_status, created_at, updated_at
++               external_reservation_id, sync_status, created_at, updated_at,
++               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
++               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
+         FROM reservation_requests WHERE business_id = ?
+     """
+     params = [business_id]
+     if status:
+-        query += ' AND status = ?'; params.append(status)
+-    query += ' ORDER BY datetime(updated_at) DESC, id DESC LIMIT 100'
+-    cur.execute(query, tuple(params)); items = [dict(r) for r in cur.fetchall()]; conn.close(); return items
++        query += ' AND (professional_status = ? OR status = ?)'; params.extend([status, status])
++    query += ' ORDER BY date(checkin_date) ASC, datetime(updated_at) DESC, id DESC LIMIT 200'
++    cur.execute(query, tuple(params))
++    items = [_enrich_reservation(dict(r), cur) for r in cur.fetchall()]
++    conn.close()
++    return items
+ 
+ 
+ def criar_reserva_manual(business_id: int, guest_name: str, guest_phone: str, checkin_date: str | None, checkout_date: str | None,
+@@ -346,11 +521,11 @@
+     finance_transaction_id = reservation.get('finance_transaction_id')
+     if not finance_transaction_id:
+         finance_transaction_id = salvar_transacao(restaurant_id, {'tipo': 'entrada', 'categoria': 'hospedagem', 'valor': float(reservation.get('quoted_amount') or 0), 'descricao': f"Reserva {reservation.get('guest_name') or reservation.get('guest_phone')}"})
+-    cur.execute("UPDATE reservation_requests SET status = 'confirmada', payment_status = 'confirmado', finance_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (finance_transaction_id, reservation_id))
++    cur.execute("UPDATE reservation_requests SET status = 'confirmada', professional_status = 'confirmada', payment_status = 'confirmado', finance_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (finance_transaction_id, reservation_id))
+     cur.execute("UPDATE payment_requests SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE reservation_request_id = ?", (reservation_id,))
+     cur.execute("SELECT session_id FROM reservation_requests WHERE id = ?", (reservation_id,))
+     session_row = cur.fetchone()
+-    conn.commit(); cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,)); result = dict(cur.fetchone()); conn.close()
++    conn.commit(); cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,)); result = _enrich_reservation(dict(cur.fetchone()), cur); conn.close()
+     if session_row and session_row['session_id']:
+         update_chat_session_status(session_row['session_id'], 'closed', handoff_reason='Pagamento confirmado')
+         try:
+@@ -361,6 +536,108 @@
+     return {'item': result, 'finance_transaction_id': finance_transaction_id, 'confirmed_by': actor_name, 'customer_notify': notify_result}
+ 
+ 
++def update_reservation(business_id: int, reservation_id: int, **fields):
++    allowed = {
++        'guest_name', 'guest_phone', 'checkin_date', 'checkout_date', 'guest_count', 'unit_category', 'quoted_amount',
++        'status', 'payment_status', 'notes', 'source', 'external_reservation_id', 'sync_status', 'reservation_code',
++        'professional_status', 'total_value', 'notes_internal', 'main_guest_name', 'main_guest_phone', 'guest_document',
++        'guest_email', 'guest_city', 'car_plate', 'estimated_arrival', 'guest_list_json'
++    }
++    payload = {k: v for k, v in fields.items() if k in allowed and v is not None}
++    guests = fields.get('guests')
++    if 'source' in payload:
++        payload['source'] = _normalize_reservation_source(payload['source'])
++    if 'professional_status' in payload or 'status' in payload or 'payment_status' in fields:
++        payload['professional_status'] = _normalize_reservation_status(payload.get('professional_status') or payload.get('status'), fields.get('payment_status') or payload.get('payment_status'))
++    conn = conectar(); cur = conn.cursor()
++    cur.execute("SELECT * FROM reservation_requests WHERE id = ? AND business_id = ? LIMIT 1", (reservation_id, business_id))
++    row = cur.fetchone()
++    if not row:
++        conn.close()
++        raise ValueError('Reserva não encontrada.')
++    current = dict(row)
++    if not payload.get('reservation_code'):
++        payload['reservation_code'] = current.get('reservation_code') or _generate_reservation_code()
++    if 'total_value' not in payload:
++        payload['total_value'] = fields.get('quoted_amount', current.get('total_value') or current.get('quoted_amount') or 0)
++    if guests is not None:
++        payload['guest_list_json'] = _serialize_guests(guests)
++    parts = [f"{k} = ?" for k in payload]
++    values = list(payload.values())
++    if parts:
++        cur.execute(f"UPDATE reservation_requests SET {', '.join(parts)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND business_id = ?", tuple(values + [reservation_id, business_id]))
++    _replace_reservation_guests(cur, reservation_id, payload.get('main_guest_name', current.get('main_guest_name') or current.get('guest_name')), payload.get('main_guest_phone', current.get('main_guest_phone') or current.get('guest_phone')), payload.get('guest_email', current.get('guest_email')), guests=guests if guests is not None else _deserialize_guests(payload.get('guest_list_json') or current.get('guest_list_json')), cpf=payload.get('guest_document', current.get('guest_document')), city=payload.get('guest_city', current.get('guest_city')), car_plate=payload.get('car_plate', current.get('car_plate')))
++    conn.commit()
++    cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,))
++    item = _enrich_reservation(dict(cur.fetchone()), cur)
++    conn.close()
++    return item
++
++
++def cancel_reservation(business_id: int, reservation_id: int, reason: str | None = None):
++    return update_reservation(business_id, reservation_id, status='cancelada', professional_status='cancelada', payment_status='cancelado' if reason else None, notes_internal=reason)
++
++
++def get_reservations_calendar(business_id: int, start_date: str | None = None, end_date: str | None = None):
++    rooms = list_room_types(business_id)
++    if not start_date:
++        today = date.today()
++        start_date = today.replace(day=1).isoformat()
++    if not end_date:
++        start = datetime.fromisoformat(start_date)
++        month = start.month + 1
++        year = start.year + (1 if month == 13 else 0)
++        month = 1 if month == 13 else month
++        next_month = start.replace(year=year, month=month, day=1)
++        end_date = (next_month + timedelta(days=14)).date().isoformat()
++    conn = conectar(); cur = conn.cursor()
++    cur.execute(
++        """
++        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
++               unit_category, quoted_amount, status, payment_status, payment_reference,
++               human_confirmation_required, notes, finance_transaction_id, source,
++               external_reservation_id, sync_status, created_at, updated_at,
++               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
++               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
++        FROM reservation_requests
++        WHERE business_id = ?
++          AND COALESCE(checkin_date, date(created_at)) <= ?
++          AND COALESCE(checkout_date, checkin_date, date(created_at)) >= ?
++        ORDER BY date(checkin_date) ASC, id ASC
++        """,
++        (business_id, end_date, start_date),
++    )
++    reservations = [_enrich_reservation(dict(r), cur) for r in cur.fetchall()]
++    conn.close()
++    room_index = {room['code']: room for room in rooms}
++    items = []
++    for res in reservations:
++        room = room_index.get(res.get('unit_category') or '') or {}
++        items.append({
++            'id': res['id'],
++            'reservation_code': res.get('reservation_code'),
++            'room_id': room.get('id'),
++            'room_name': room.get('name') or res.get('unit_category') or 'Sem quarto',
++            'room_code': res.get('unit_category'),
++            'guest_name': res.get('main_guest_name') or res.get('guest_name'),
++            'checkin': res.get('checkin_date'),
++            'checkout': res.get('checkout_date'),
++            'status': res.get('professional_status') or res.get('status'),
++            'payment_status': res.get('payment_status'),
++            'total_value': res.get('total_value') or res.get('quoted_amount') or 0,
++            'source': res.get('source'),
++            'guest_count': res.get('guest_count'),
++            'reservation': res,
++        })
++    return {
++        'start_date': start_date,
++        'end_date': end_date,
++        'rooms': rooms,
++        'count': len(items),
++        'items': items,
++    }
++
++
+ def _count_reservations_by_state(business_id: int, unit_category: str | None = None):
+     conn = conectar(); cur = conn.cursor()
+     query = """
+diff --git a/frontend/src/app/globals.css b/frontend/src/app/globals.css
+--- a/frontend/src/app/globals.css
++++ b/frontend/src/app/globals.css
+@@ -749,3 +749,63 @@
+ html[data-theme="light"] .team-phone,
+ html[data-theme="light"] .team-meta,
+ html[data-theme="light"] .empty-box { color: #64748b; }
++
++
++:root[data-theme="dark"] {
++  --bg: #0f172a;
++  --panel: rgba(17, 24, 39, 0.92);
++  --panel-strong: rgba(15, 23, 42, 0.96);
++  --text: #f8fafc;
++  --muted: #cbd5e1;
++  --border: rgba(250, 204, 21, 0.14);
++  --shadow: 0 22px 58px rgba(2, 8, 23, 0.46);
++  --primary: #f59e0b;
++  --primary-strong: #facc15;
++}
++
++.success-box { background: rgba(34,197,94,.14); border: 1px solid rgba(34,197,94,.35); color: #dcfce7; padding: 12px 14px; border-radius: 14px; }
++.pill.danger { color: #fecaca; background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.25); }
++.table-subtext { color: var(--muted); font-size: 12px; margin-top: 4px; }
++.wrap-right { justify-content: flex-end; }
++.premium-summary-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:18px; }
++.split-grid-strong { grid-template-columns: 1.2fr .8fr; align-items:start; }
++.helper-stack { display:grid; gap:14px; }
++.premium-glow { box-shadow: 0 18px 60px rgba(250, 204, 21, .09), 0 24px 60px rgba(0,0,0,.26); }
++.calendar-nav { display:flex; gap:12px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
++.calendar-month-label { padding: 10px 16px; border-radius: 999px; background: rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); font-weight:700; text-transform: capitalize; }
++.reservation-map-shell { overflow:auto; }
++.reservation-map-grid { min-width: 1400px; display:grid; grid-template-columns: 220px repeat(31, minmax(64px,1fr)); gap: 8px; align-items:stretch; }
++.map-corner, .map-day-header, .map-room-label, .map-day-cell { background: rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06); border-radius: 14px; min-height: 72px; position:relative; }
++.map-corner { display:flex; align-items:center; justify-content:center; font-weight:700; }
++.map-day-header { padding: 10px 6px; display:grid; justify-items:center; align-content:center; gap:4px; font-size:12px; text-transform:capitalize; }
++.map-room-label { padding: 14px; display:grid; gap:6px; align-content:center; }
++.map-room-label span { color: var(--muted); font-size:12px; }
++.map-day-cell { overflow: visible; }
++.reservation-block { position:absolute; inset:8px auto 8px 8px; z-index:2; min-width: calc(100% - 16px); border:none; border-radius: 18px; padding: 12px; color:#fff; cursor:pointer; text-align:left; display:grid; gap:6px; box-shadow: 0 16px 30px rgba(15,23,42,.34); }
++.reservation-block strong { font-size: 13px; }
++.reservation-block span { font-size: 11px; opacity: .9; }
++.status-confirmada { background: linear-gradient(135deg, #16a34a, #22c55e); }
++.status-aguardando, .status-lead { background: linear-gradient(135deg, #f59e0b, #facc15); color:#1f2937; }
++.status-cancelada { background: linear-gradient(135deg, #dc2626, #ef4444); }
++.status-bloqueada { background: linear-gradient(135deg, #6b7280, #9ca3af); }
++.status-checkin { background: linear-gradient(135deg, #0284c7, #38bdf8); }
++.status-checkout { background: linear-gradient(135deg, #7c3aed, #a78bfa); }
++.reservation-modal-backdrop { position: fixed; inset:0; background: rgba(2,8,23,.65); display:grid; place-items:center; padding:24px; z-index:50; }
++.reservation-modal { width:min(1080px, 100%); max-height: 92vh; overflow:auto; }
++.modal-title { margin-top: 4px; }
++.compact-grid { align-items:end; }
++.guest-list-panel { display:grid; gap:12px; padding:18px; border-radius:20px; background: rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06); }
++.section-subtitle { margin:0; font-size:18px; }
++.guest-chip-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; }
++.modal-actions { display:flex; gap:12px; flex-wrap:wrap; justify-content:flex-end; margin-top: 18px; }
++.theme-toggle { border:none; padding: 12px 16px; border-radius: 14px; background: linear-gradient(135deg, rgba(250,204,21,.15), rgba(249,115,22,.16)); color: #f8fafc; cursor:pointer; border:1px solid rgba(250,204,21,.18); }
++.table-action-link { text-decoration:none; display:inline-flex; align-items:center; }
++
++@media (max-width: 1200px) {
++  .premium-summary-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
++  .split-grid-strong { grid-template-columns: 1fr; }
++  .guest-chip-grid { grid-template-columns: 1fr; }
++}
++@media (max-width: 720px) {
++  .premium-summary-grid { grid-template-columns: 1fr; }
++}
+diff --git a/frontend/src/app/reservations/page.tsx b/frontend/src/app/reservations/page.tsx
+--- a/frontend/src/app/reservations/page.tsx
++++ b/frontend/src/app/reservations/page.tsx
+@@ -1,39 +1,86 @@
+ "use client";
+-import { FormEvent, useEffect, useState } from "react";
++import Link from "next/link";
++import { FormEvent, useEffect, useMemo, useState } from "react";
+ import { ProtectedPage } from "@/components/ProtectedPage";
+ import { SimpleTable } from "@/components/SimpleTable";
+ import { apiFetch } from "@/lib/api";
+ import { formatCurrency, formatDateTime } from "@/lib/format";
+-import { OccupancyMapResponse, ReservationResponse, RoomTypeResponse } from "@/types/hospitality";
++import { ReservationItem, ReservationResponse, RoomTypeResponse } from "@/types/hospitality";
+ 
+ export default function ReservationsPage() { return <ProtectedPage>{() => <ReservationsContent />}</ProtectedPage>; }
+ 
++type ReservationForm = {
++  guest_name: string;
++  guest_phone: string;
++  checkin_date: string;
++  checkout_date: string;
++  guest_count: number;
++  unit_category: string;
++  quoted_amount: number;
++  notes: string;
++  notes_internal: string;
++  source: string;
++  main_guest_name: string;
++  main_guest_phone: string;
++  guest_document: string;
++  guest_email: string;
++  guest_city: string;
++  car_plate: string;
++  estimated_arrival: string;
++  guests: Array<{ name: string }>;
++};
++
++const emptyForm: ReservationForm = {
++  guest_name: "", guest_phone: "", checkin_date: "", checkout_date: "", guest_count: 2, unit_category: "", quoted_amount: 0,
++  notes: "", notes_internal: "", source: "balcao", main_guest_name: "", main_guest_phone: "", guest_document: "", guest_email: "",
++  guest_city: "", car_plate: "", estimated_arrival: "", guests: [{ name: "" }],
++};
++
+ function ReservationsContent() {
+   const [data, setData] = useState<ReservationResponse | null>(null);
+   const [rooms, setRooms] = useState<RoomTypeResponse | null>(null);
+-  const [occupancy, setOccupancy] = useState<OccupancyMapResponse | null>(null);
+   const [error, setError] = useState("");
+   const [saving, setSaving] = useState(false);
+   const [confirmingId, setConfirmingId] = useState<number | null>(null);
+   const [success, setSuccess] = useState("");
+-  const [form, setForm] = useState({ guest_name: "", guest_phone: "", checkin_date: "", checkout_date: "", guest_count: 2, unit_category: "", quoted_amount: 0, notes: "", source: "panel" });
++  const [form, setForm] = useState<ReservationForm>(emptyForm);
+ 
+   async function load() {
+     try {
+-      const [r, m, o] = await Promise.all([apiFetch<ReservationResponse>("/hospitality/reservations"), apiFetch<RoomTypeResponse>("/hospitality/room-types"), apiFetch<OccupancyMapResponse>("/hospitality/occupancy-map")]);
+-      setData(r); setRooms(m); setOccupancy(o);
++      const [r, m] = await Promise.all([apiFetch<ReservationResponse>("/hospitality/reservations"), apiFetch<RoomTypeResponse>("/hospitality/room-types")]);
++      setData(r); setRooms(m);
+       if (m.items[0] && !form.unit_category) setForm((c) => ({ ...c, unit_category: m.items[0].code }));
+     } catch (err) { setError(err instanceof Error ? err.message : "Erro ao carregar reservas."); }
+   }
+ 
+   useEffect(() => { load(); }, []);
+ 
++  const summary = useMemo(() => {
++    const items = data?.items || [];
++    return {
++      total: items.length,
++      awaiting: items.filter((item) => item.status === 'aguardando_pagamento').length,
++      confirmed: items.filter((item) => item.status === 'confirmada').length,
++      revenue: items.filter((item) => item.payment_status === 'confirmado').reduce((sum, item) => sum + Number(item.total_value || item.quoted_amount || 0), 0),
++    };
++  }, [data]);
++
+   async function handleSubmit(event: FormEvent) {
+     event.preventDefault(); setSaving(true); setError(""); setSuccess("");
+     try {
+-      await apiFetch("/hospitality/reservations", { method: "POST", body: JSON.stringify(form) });
+-      setForm({ guest_name: "", guest_phone: "", checkin_date: "", checkout_date: "", guest_count: 2, unit_category: rooms?.items[0]?.code || "", quoted_amount: 0, notes: "", source: "panel" });
+-      setSuccess("Reserva criada com sucesso.");
++      await apiFetch("/hospitality/reservations", {
++        method: "POST",
++        body: JSON.stringify({
++          ...form,
++          source: form.source,
++          main_guest_name: form.main_guest_name || form.guest_name,
++          main_guest_phone: form.main_guest_phone || form.guest_phone,
++          guests: form.guests.filter((guest) => guest.name.trim()).map((guest) => ({ name: guest.name.trim() })),
++          total_value: form.quoted_amount,
++        }),
++      });
++      setForm({ ...emptyForm, unit_category: rooms?.items[0]?.code || "" });
++      setSuccess("Reserva profissional criada com sucesso.");
+       await load();
+     } catch (err) { setError(err instanceof Error ? err.message : "Erro ao salvar reserva."); }
+     finally { setSaving(false); }
+@@ -41,97 +88,92 @@
+ 
+   async function confirmPayment(id: number) {
+     setConfirmingId(id); setError(""); setSuccess("");
+-    try { const result = await apiFetch<{customer_notify?: {status_code?: number}; item?: {guest_name?: string; guest_phone?: string}}>(`/hospitality/reservations/${id}/confirm-payment`, { method: "POST" });
++    try {
++      const result = await apiFetch<{customer_notify?: {status_code?: number}; item?: ReservationItem}>(`/hospitality/reservations/${id}/confirm-payment`, { method: "POST" });
+       const notifyStatus = result?.customer_notify?.status_code;
+-      const guestLabel = result?.item?.guest_name || result?.item?.guest_phone || "cliente";
++      const guestLabel = result?.item?.main_guest_name || result?.item?.guest_name || result?.item?.guest_phone || "cliente";
+       setSuccess(notifyStatus && notifyStatus < 400 ? `Pagamento confirmado e ${guestLabel} notificado no WhatsApp.` : `Pagamento confirmado. Revise a entrega da mensagem para ${guestLabel} no WhatsApp.`);
+-      await load(); }
+-    catch (err) { setError(err instanceof Error ? err.message : "Erro ao confirmar pagamento."); }
++      await load();
++    } catch (err) { setError(err instanceof Error ? err.message : "Erro ao confirmar pagamento."); }
+     finally { setConfirmingId(null); }
+   }
+ 
+   return (
+-    <div className="page-grid">
+-      <div className="card hero-panel fade-up">
++    <div className="page-grid reservations-premium-page">
++      <div className="card hero-panel fade-up premium-glow">
+         <div className="hero-copy">
+-          <div className="eyebrow">Central de reservas</div>
+-          <h2>Operação de reservas, pagamentos e origem da ocupação.</h2>
+-          <p>Use esta área para reservas do painel, do WhatsApp, do balcão e, futuramente, do PMS. Quando o pagamento for confirmado, a receita entra no financeiro automaticamente.</p>
+-        </div>
+-        <div className="stat-strip">
+-          <div className="pill info">Origem unificada</div>
+-          <div className="pill warning">Sincronização PMS pronta</div>
++          <div className="eyebrow">Fase 18 • reserva profissional</div>
++          <h2>Central de reservas com padrão PMS e ficha completa do hóspede.</h2>
++          <p>Agora sua operação já nasce preparada para mapa de reservas, múltiplos hóspedes, status profissionais e gestão mais madura de balcão, telefone, WhatsApp e integrações futuras.</p>
++        </div>
++        <div className="stat-strip wrap-right">
++          <Link className="button" href="/reservations/map">Abrir mapa de reservas</Link>
++          <div className="pill info">Código automático</div>
++          <div className="pill warning">Modo premium</div>
+         </div>
+       </div>
+ 
+       {error ? <div className="error-box">{error}</div> : null}
+-
+       {success ? <div className="success-box">{success}</div> : null}
+ 
+-      <div className="split-grid">
++      <div className="premium-summary-grid fade-up">
++        <div className="card"><div className="metric-kicker">Reservas</div><div className="metric-value">{summary.total}</div><div className="metric-title">Total cadastrado</div></div>
++        <div className="card"><div className="metric-kicker">Aguardando</div><div className="metric-value">{summary.awaiting}</div><div className="metric-title">Pagamento ou confirmação</div></div>
++        <div className="card"><div className="metric-kicker">Confirmadas</div><div className="metric-value">{summary.confirmed}</div><div className="metric-title">Já prontas para hospedagem</div></div>
++        <div className="card"><div className="metric-kicker">Receita</div><div className="metric-value">{formatCurrency(summary.revenue)}</div><div className="metric-title">Entrada confirmada</div></div>
++      </div>
++
++      <div className="split-grid split-grid-strong">
+         <div className="card fade-up">
+-          <h2 className="section-title">Nova reserva</h2>
++          <div className="section-row"><h2 className="section-title">Nova reserva profissional</h2><div className="pill info">Ficha do hóspede inclusa</div></div>
+           <form onSubmit={handleSubmit} className="form-grid">
+             <div className="two-col">
+-              <label className="label">Hóspede<input className="input" value={form.guest_name} onChange={(e) => setForm({ ...form, guest_name: e.target.value })} required /></label>
+-              <label className="label">Telefone<input className="input" value={form.guest_phone} onChange={(e) => setForm({ ...form, guest_phone: e.target.value })} required /></label>
++              <label className="label">Nome principal<input className="input" value={form.guest_name} onChange={(e) => setForm({ ...form, guest_name: e.target.value, main_guest_name: e.target.value })} required /></label>
++              <label className="label">Telefone principal<input className="input" value={form.guest_phone} onChange={(e) => setForm({ ...form, guest_phone: e.target.value, main_guest_phone: e.target.value })} required /></label>
+               <label className="label">Check-in<input className="input" type="date" value={form.checkin_date} onChange={(e) => setForm({ ...form, checkin_date: e.target.value })} /></label>
+               <label className="label">Check-out<input className="input" type="date" value={form.checkout_date} onChange={(e) => setForm({ ...form, checkout_date: e.target.value })} /></label>
+               <label className="label">Hóspedes<input className="input" type="number" value={form.guest_count} onChange={(e) => setForm({ ...form, guest_count: Number(e.target.value) })} /></label>
+-              <label className="label">Tipo de quarto<select className="input" value={form.unit_category} onChange={(e) => setForm({ ...form, unit_category: e.target.value })}>{rooms?.items.map((room) => <option key={room.id} value={room.code}>{room.code} • {room.name}</option>)}</select></label>
+-              <label className="label">Valor cotado<input className="input" type="number" value={form.quoted_amount} onChange={(e) => setForm({ ...form, quoted_amount: Number(e.target.value) })} /></label>
+-              <label className="label">Origem<select className="input" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })}><option value="panel">Painel</option><option value="admin_manual">Admin manual</option><option value="whatsapp">WhatsApp</option><option value="pms_voa">PMS VOA</option></select></label>
++              <label className="label">Quarto / tipologia<select className="input" value={form.unit_category} onChange={(e) => setForm({ ...form, unit_category: e.target.value })}>{rooms?.items.map((room) => <option key={room.id} value={room.code}>{room.code} • {room.name}</option>)}</select></label>
++              <label className="label">Origem<select className="input" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })}><option value="whatsapp">WhatsApp</option><option value="balcao">Balcão</option><option value="telefone">Telefone</option><option value="site">Site</option></select></label>
++              <label className="label">Valor total<input className="input" type="number" value={form.quoted_amount} onChange={(e) => setForm({ ...form, quoted_amount: Number(e.target.value) })} /></label>
++              <label className="label">CPF<input className="input" value={form.guest_document} onChange={(e) => setForm({ ...form, guest_document: e.target.value })} /></label>
++              <label className="label">E-mail<input className="input" value={form.guest_email} onChange={(e) => setForm({ ...form, guest_email: e.target.value })} /></label>
++              <label className="label">Cidade<input className="input" value={form.guest_city} onChange={(e) => setForm({ ...form, guest_city: e.target.value })} /></label>
++              <label className="label">Placa do carro<input className="input" value={form.car_plate} onChange={(e) => setForm({ ...form, car_plate: e.target.value })} /></label>
++              <label className="label">Previsão de chegada<input className="input" placeholder="Ex: 18:30" value={form.estimated_arrival} onChange={(e) => setForm({ ...form, estimated_arrival: e.target.value })} /></label>
++              <label className="label">Acompanhante<input className="input" value={form.guests[0]?.name || ""} onChange={(e) => setForm({ ...form, guests: [{ name: e.target.value }] })} placeholder="Nome do acompanhante" /></label>
+             </div>
+-            <label className="label">Observações<textarea className="input" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
+-            <button className="button" type="submit" disabled={saving}>{saving ? "Salvando..." : "Salvar reserva"}</button>
++            <label className="label">Observações da reserva<textarea className="input" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
++            <label className="label">Observações internas<textarea className="input" value={form.notes_internal} onChange={(e) => setForm({ ...form, notes_internal: e.target.value })} /></label>
++            <button className="button" type="submit" disabled={saving}>{saving ? "Salvando..." : "Salvar reserva profissional"}</button>
+           </form>
+         </div>
+ 
+         <div className="card fade-up">
+-          <h2 className="section-title">Fluxo do admin no WhatsApp</h2>
+-          <div className="helper-box">
+-            <strong>Reserva manual via WhatsApp:</strong><br />
+-            /reserva balcão Nome; 557399999999; CASAL; 2026-03-20; 2026-03-22; 560; observação
++          <h2 className="section-title">Estrutura PMS entregue</h2>
++          <div className="helper-stack">
++            <div className="helper-box"><strong>Status profissionais</strong><br />lead, aguardando_pagamento, confirmada, checkin, checkout, cancelada e bloqueada.</div>
++            <div className="helper-box"><strong>Origem comercial</strong><br />WhatsApp, balcão, telefone e site, já preparada para Omnibees ou outro integrador.</div>
++            <div className="helper-box"><strong>Ficha do hóspede</strong><br />CPF, e-mail, cidade, placa, previsão de chegada e acompanhantes.</div>
++            <div className="helper-box"><strong>Operação visual</strong><br />Use o mapa PMS para enxergar reservas por quarto e por período.</div>
+           </div>
+-          <div className="helper-box">
+-            <strong>Comandos úteis:</strong><br />
+-            /assumir 5573...<br />
+-            /liberar 5573...<br />
+-            /reservas hoje<br />
+-            /tarifas semana CASAL 320, FAMILIA 420
+-          </div>
+-        </div>
+-      </div>
+-
+-      <div className="card fade-up">
+-        <div className="section-row">
+-          <h2 className="section-title">Mapa de ocupação</h2>
+-          <div className="pill info">{occupancy?.count || 0} tipologias</div>
+-        </div>
+-        <div className="occupancy-grid">
+-          {(occupancy?.items || []).map((item) => (
+-            <div key={item.code} className={`occupancy-card occupancy-${item.occupancy_status}`}>
+-              <div className="occupancy-head">
+-                <div>
+-                  <div className="eyebrow">{item.code}</div>
+-                  <h3>{item.name}</h3>
+-                </div>
+-                <div className={`pill ${item.occupancy_status === 'alta' ? 'warning' : item.occupancy_status === 'media' ? 'info' : 'success'}`}>{item.occupancy_pct}% ocupado</div>
+-              </div>
+-              <div className="occupancy-bar"><span style={{ width: `${Math.min(100, item.occupancy_pct)}%` }} /></div>
+-              <div className="occupancy-meta">
+-                <strong>{item.occupied_estimate}</strong> confirmados • <strong>{item.pending_estimate}</strong> pendentes • <strong>{item.blocked_estimate}</strong> bloqueados • <strong>{item.available_estimate}</strong> livres • total {item.total}
+-              </div>
+-              <div className="occupancy-note">Capacidade {item.capacity} • {item.bed_setup || 'Configuração não informada'} • tarifa base {formatCurrency(item.effective_rate || 0)}</div>
+-            </div>
+-          ))}
+         </div>
+       </div>
+ 
+-
+       <div className="card fade-up">
+         <div className="section-row"><h2 className="section-title">Reservas registradas</h2><div className="pill info">{data?.count || 0} reservas</div></div>
+-        <SimpleTable headers={["Atualizado", "Hóspede", "Período", "Quarto", "Origem", "Status", "Pagamento", "Valor", "Ações"]} rows={(data?.items || []).map((item) => [formatDateTime(item.updated_at), item.guest_name || item.guest_phone, `${item.checkin_date || "-"} → ${item.checkout_date || "-"}`, item.unit_category || "-", item.source || "-", <span key={`${item.id}-s`} className="pill info">{item.status}</span>, <span key={`${item.id}-p`} className={`pill ${item.payment_status === 'confirmado' ? 'success' : 'warning'}`}>{item.payment_status}</span>, formatCurrency(item.quoted_amount || 0), item.payment_status === 'confirmado' ? <span key={`${item.id}-ok`} className="pill success">Confirmado</span> : <button key={`${item.id}-btn`} className="button success" disabled={confirmingId === item.id} onClick={() => confirmPayment(item.id)}>{confirmingId === item.id ? "Confirmando..." : "Confirmar"}</button>])} />
++        <SimpleTable headers={["Código", "Atualizado", "Hóspede", "Período", "Quarto", "Origem", "Status", "Pagamento", "Valor", "Ações"]} rows={(data?.items || []).map((item) => [
++          item.reservation_code || `RES-${item.id}`,
++          formatDateTime(item.updated_at),
++          <div key={`guest-${item.id}`}><strong>{item.main_guest_name || item.guest_name || item.guest_phone}</strong><div className="table-subtext">{item.guest_summary || item.guest_phone}</div></div>,
++          `${item.checkin_date || "-"} → ${item.checkout_date || "-"}`,
++          item.unit_category || "-",
++          item.source || "-",
++          <span key={`${item.id}-s`} className={`pill ${item.status === 'confirmada' ? 'success' : item.status === 'cancelada' ? 'danger' : 'warning'}`}>{item.status}</span>,
++          <span key={`${item.id}-p`} className={`pill ${item.payment_status === 'confirmado' ? 'success' : 'warning'}`}>{item.payment_status}</span>,
++          formatCurrency(item.total_value || item.quoted_amount || 0),
++          item.payment_status === 'confirmado' ? <Link key={`${item.id}-view`} className="button ghost table-action-link" href="/reservations/map">Ver no mapa</Link> : <button key={`${item.id}-btn`} className="button success" disabled={confirmingId === item.id} onClick={() => confirmPayment(item.id)}>{confirmingId === item.id ? "Confirmando..." : "Confirmar"}</button>
++        ])} />
+       </div>
+     </div>
+   );
+diff --git a/frontend/src/app/reservations/map/page.tsx b/frontend/src/app/reservations/map/page.tsx
+--- a/frontend/src/app/reservations/map/page.tsx
++++ b/frontend/src/app/reservations/map/page.tsx
+@@ -0,0 +1,193 @@
++"use client";
++import { useEffect, useMemo, useState } from "react";
++import { ProtectedPage } from "@/components/ProtectedPage";
++import { apiFetch } from "@/lib/api";
++import { formatCurrency } from "@/lib/format";
++import { ReservationItem, ReservationsCalendarResponse } from "@/types/hospitality";
++
++export default function ReservationMapPage() { return <ProtectedPage>{() => <ReservationMapContent />}</ProtectedPage>; }
++
++const STATUS_CLASS: Record<string, string> = {
++  confirmada: 'status-confirmada',
++  aguardando_pagamento: 'status-aguardando',
++  cancelada: 'status-cancelada',
++  bloqueada: 'status-bloqueada',
++  lead: 'status-lead',
++  checkin: 'status-checkin',
++  checkout: 'status-checkout',
++};
++
++function plusDays(base: Date, days: number) {
++  const next = new Date(base);
++  next.setDate(next.getDate() + days);
++  return next;
++}
++
++function toISO(date: Date) { return date.toISOString().slice(0, 10); }
++
++function ReservationMapContent() {
++  const initial = useMemo(() => {
++    const base = new Date();
++    base.setDate(1);
++    return base;
++  }, []);
++  const [monthBase, setMonthBase] = useState(initial);
++  const [calendar, setCalendar] = useState<ReservationsCalendarResponse | null>(null);
++  const [selected, setSelected] = useState<ReservationItem | null>(null);
++  const [error, setError] = useState("");
++  const [saving, setSaving] = useState(false);
++
++  const startDate = useMemo(() => toISO(monthBase), [monthBase]);
++  const endDate = useMemo(() => toISO(plusDays(monthBase, 40)), [monthBase]);
++  const days = useMemo(() => Array.from({ length: 31 }, (_, index) => plusDays(monthBase, index)), [monthBase]);
++
++  async function load() {
++    try {
++      const data = await apiFetch<ReservationsCalendarResponse>(`/hospitality/reservations/calendar?start_date=${startDate}&end_date=${endDate}`);
++      setCalendar(data);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Erro ao carregar o mapa de reservas.');
++    }
++  }
++
++  useEffect(() => { load(); }, [startDate, endDate]);
++
++  function openReservation(reservation: ReservationItem) { setSelected(JSON.parse(JSON.stringify(reservation))); }
++
++  async function saveReservation() {
++    if (!selected) return;
++    setSaving(true); setError("");
++    try {
++      await apiFetch(`/hospitality/reservations/${selected.id}`, { method: 'PUT', body: JSON.stringify(selected) });
++      await load();
++      setSaving(false);
++    } catch (err) {
++      setSaving(false);
++      setError(err instanceof Error ? err.message : 'Erro ao salvar a reserva.');
++    }
++  }
++
++  async function confirmPayment() {
++    if (!selected) return;
++    setSaving(true);
++    try {
++      await apiFetch(`/hospitality/reservations/${selected.id}/confirm-payment`, { method: 'POST' });
++      await load();
++      const detail = await apiFetch<{item: ReservationItem}>(`/hospitality/reservations/${selected.id}`);
++      setSelected(detail.item);
++      setSaving(false);
++    } catch (err) {
++      setSaving(false);
++      setError(err instanceof Error ? err.message : 'Erro ao confirmar pagamento.');
++    }
++  }
++
++  async function cancelReservation() {
++    if (!selected) return;
++    setSaving(true);
++    try {
++      await apiFetch(`/hospitality/reservations/${selected.id}/cancel`, { method: 'POST', body: JSON.stringify({ notes_internal: selected.notes_internal || 'Cancelada pelo painel PMS.' }) });
++      await load();
++      const detail = await apiFetch<{item: ReservationItem}>(`/hospitality/reservations/${selected.id}`);
++      setSelected(detail.item);
++      setSaving(false);
++    } catch (err) {
++      setSaving(false);
++      setError(err instanceof Error ? err.message : 'Erro ao cancelar reserva.');
++    }
++  }
++
++  const monthLabel = monthBase.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
++
++  return (
++    <div className="page-grid reservations-map-page">
++      <div className="card hero-panel fade-up premium-glow">
++        <div className="hero-copy">
++          <div className="eyebrow">Mapa de Reservas • PMS visual</div>
++          <h2>Visualização por quarto, por dia e com interação de reserva.</h2>
++          <p>Essa tela é o início da transformação do dashboard em PMS: leitura operacional rápida, cores por status e edição da ficha do hóspede sem sair do mapa.</p>
++        </div>
++        <div className="calendar-nav">
++          <button className="button ghost" onClick={() => setMonthBase(new Date(monthBase.getFullYear(), monthBase.getMonth() - 1, 1))}>← mês anterior</button>
++          <div className="calendar-month-label">{monthLabel}</div>
++          <button className="button ghost" onClick={() => setMonthBase(new Date(monthBase.getFullYear(), monthBase.getMonth() + 1, 1))}>próximo mês →</button>
++        </div>
++      </div>
++      {error ? <div className="error-box">{error}</div> : null}
++
++      <div className="card fade-up reservation-map-shell">
++        <div className="reservation-map-grid">
++          <div className="map-corner">Quartos</div>
++          {days.map((day) => <div key={day.toISOString()} className="map-day-header"><strong>{day.toLocaleDateString('pt-BR', { day: '2-digit' })}</strong><span>{day.toLocaleDateString('pt-BR', { weekday: 'short' })}</span></div>)}
++          {(calendar?.rooms || []).map((room) => {
++            const roomReservations = (calendar?.items || []).filter((item) => item.room_code === room.code);
++            return (
++              <>
++                <div key={`label-${room.id}`} className="map-room-label"><strong>{room.name}</strong><span>{room.code}</span></div>
++                {days.map((day, index) => {
++                  const iso = toISO(day);
++                  const reservation = roomReservations.find((item) => item.checkin && item.checkout && iso >= item.checkin && iso < item.checkout);
++                  const startsHere = reservation?.checkin === iso;
++                  const checkoutDate = reservation?.checkout ? new Date(reservation.checkout) : null;
++                  const checkinDate = reservation?.checkin ? new Date(reservation.checkin) : null;
++                  const span = startsHere && checkoutDate && checkinDate ? Math.max(1, Math.ceil((checkoutDate.getTime() - checkinDate.getTime()) / 86400000)) : 1;
++                  return (
++                    <div key={`${room.id}-${index}`} className="map-day-cell">
++                      {startsHere && reservation ? (
++                        <button className={`reservation-block ${STATUS_CLASS[reservation.status] || 'status-lead'}`} style={{ gridColumn: `span ${Math.min(span, days.length - index)}` }} onClick={() => openReservation(reservation.reservation)}>
++                          <strong>{reservation.guest_name || 'Reserva'}</strong>
++                          <span>{reservation.room_code} • {formatCurrency(reservation.total_value || 0)}</span>
++                        </button>
++                      ) : null}
++                    </div>
++                  );
++                })}
++              </>
++            );
++          })}
++        </div>
++      </div>
++
++      {selected ? (
++        <div className="reservation-modal-backdrop" onClick={() => setSelected(null)}>
++          <div className="reservation-modal card" onClick={(event) => event.stopPropagation()}>
++            <div className="section-row"><div><div className="eyebrow">{selected.reservation_code || `RES-${selected.id}`}</div><h2 className="section-title modal-title">{selected.main_guest_name || selected.guest_name || 'Reserva'}</h2></div><button className="button ghost" onClick={() => setSelected(null)}>Fechar</button></div>
++            <div className="three-col compact-grid">
++              <label className="label">Status<select className="input" value={selected.professional_status || selected.status} onChange={(e) => setSelected({ ...selected, professional_status: e.target.value, status: e.target.value })}><option value="lead">lead</option><option value="aguardando_pagamento">aguardando_pagamento</option><option value="confirmada">confirmada</option><option value="checkin">checkin</option><option value="checkout">checkout</option><option value="cancelada">cancelada</option><option value="bloqueada">bloqueada</option></select></label>
++              <label className="label">Pagamento<select className="input" value={selected.payment_status || ''} onChange={(e) => setSelected({ ...selected, payment_status: e.target.value })}><option value="aguardando_pagamento">aguardando_pagamento</option><option value="pending_confirmation">pending_confirmation</option><option value="confirmado">confirmado</option><option value="cancelado">cancelado</option></select></label>
++              <label className="label">Origem<select className="input" value={selected.source || 'whatsapp'} onChange={(e) => setSelected({ ...selected, source: e.target.value })}><option value="whatsapp">whatsapp</option><option value="balcao">balcao</option><option value="telefone">telefone</option><option value="site">site</option></select></label>
++              <label className="label">Check-in<input className="input" type="date" value={selected.checkin_date || ''} onChange={(e) => setSelected({ ...selected, checkin_date: e.target.value })} /></label>
++              <label className="label">Check-out<input className="input" type="date" value={selected.checkout_date || ''} onChange={(e) => setSelected({ ...selected, checkout_date: e.target.value })} /></label>
++              <label className="label">Quarto<input className="input" value={selected.unit_category || ''} onChange={(e) => setSelected({ ...selected, unit_category: e.target.value })} /></label>
++              <label className="label">Valor<input className="input" type="number" value={selected.total_value || selected.quoted_amount || 0} onChange={(e) => setSelected({ ...selected, total_value: Number(e.target.value), quoted_amount: Number(e.target.value) })} /></label>
++              <label className="label">Telefone<input className="input" value={selected.main_guest_phone || selected.guest_phone || ''} onChange={(e) => setSelected({ ...selected, main_guest_phone: e.target.value, guest_phone: e.target.value })} /></label>
++              <label className="label">E-mail<input className="input" value={selected.guest_email || ''} onChange={(e) => setSelected({ ...selected, guest_email: e.target.value })} /></label>
++              <label className="label">CPF<input className="input" value={selected.guest_document || ''} onChange={(e) => setSelected({ ...selected, guest_document: e.target.value })} /></label>
++              <label className="label">Cidade<input className="input" value={selected.guest_city || ''} onChange={(e) => setSelected({ ...selected, guest_city: e.target.value })} /></label>
++              <label className="label">Placa<input className="input" value={selected.car_plate || ''} onChange={(e) => setSelected({ ...selected, car_plate: e.target.value })} /></label>
++              <label className="label">Chegada prevista<input className="input" value={selected.estimated_arrival || ''} onChange={(e) => setSelected({ ...selected, estimated_arrival: e.target.value })} /></label>
++              <label className="label">Hóspede principal<input className="input" value={selected.main_guest_name || selected.guest_name || ''} onChange={(e) => setSelected({ ...selected, main_guest_name: e.target.value, guest_name: e.target.value })} /></label>
++            </div>
++            <label className="label">Observações internas<textarea className="input" value={selected.notes_internal || ''} onChange={(e) => setSelected({ ...selected, notes_internal: e.target.value })} /></label>
++            <label className="label">Observações da reserva<textarea className="input" value={selected.notes || ''} onChange={(e) => setSelected({ ...selected, notes: e.target.value })} /></label>
++            <div className="guest-list-panel">
++              <div className="section-row"><h3 className="section-subtitle">Ficha dos hóspedes</h3><div className="pill info">{selected.guests?.length || 0} registros</div></div>
++              {(selected.guests || []).map((guest, index) => (
++                <div key={index} className="guest-chip-grid">
++                  <input className="input" value={guest.name || ''} placeholder="Nome" onChange={(e) => setSelected({ ...selected, guests: (selected.guests || []).map((item, itemIndex) => itemIndex === index ? { ...item, name: e.target.value } : item) })} />
++                  <input className="input" value={guest.cpf || ''} placeholder="CPF" onChange={(e) => setSelected({ ...selected, guests: (selected.guests || []).map((item, itemIndex) => itemIndex === index ? { ...item, cpf: e.target.value } : item) })} />
++                  <input className="input" value={guest.phone || ''} placeholder="Telefone" onChange={(e) => setSelected({ ...selected, guests: (selected.guests || []).map((item, itemIndex) => itemIndex === index ? { ...item, phone: e.target.value } : item) })} />
++                </div>
++              ))}
++            </div>
++            <div className="modal-actions">
++              <button className="button success" onClick={confirmPayment} disabled={saving}>Confirmar pagamento</button>
++              <button className="button" onClick={saveReservation} disabled={saving}>{saving ? 'Salvando...' : 'Salvar alterações'}</button>
++              <button className="button warning" onClick={cancelReservation} disabled={saving}>Cancelar reserva</button>
++            </div>
++          </div>
++        </div>
++      ) : null}
++    </div>
++  );
++}
+diff --git a/frontend/src/components/AppShell.tsx b/frontend/src/components/AppShell.tsx
+--- a/frontend/src/components/AppShell.tsx
++++ b/frontend/src/components/AppShell.tsx
+@@ -21,6 +21,7 @@
+       { href: "/dashboard", label: "Dashboard", emoji: "◈" },
+       { href: "/inbox", label: "Inbox", emoji: "◎" },
+       { href: "/reservations", label: "Reservas", emoji: "◍" },
++      { href: "/reservations/map", label: "Mapa PMS", emoji: "◫" },
+       { href: "/rooms", label: "Quartos", emoji: "▣" },
+       { href: "/transactions", label: "Financeiro", emoji: "◌" },
+       { href: "/crm", label: "CRM", emoji: "◒" },
+@@ -47,10 +48,11 @@
+   const [theme, setTheme] = useState<ThemeMode>("light");
+ 
+   useEffect(() => {
+-    const nextTheme: ThemeMode = 'light';
+-    setTheme(nextTheme);
+-    document.documentElement.setAttribute('data-theme', nextTheme);
+-    if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, nextTheme);
++    const saved = typeof window !== 'undefined' ? (window.localStorage.getItem(THEME_KEY) as ThemeMode | null) : null;
++    const preferred: ThemeMode = saved === 'dark' || saved === 'light' ? saved : 'dark';
++    setTheme(preferred);
++    document.documentElement.setAttribute('data-theme', preferred);
++    if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, preferred);
+   }, []);
+ 
+   function toggleTheme() {
+diff --git a/frontend/src/types/hospitality.ts b/frontend/src/types/hospitality.ts
+--- a/frontend/src/types/hospitality.ts
++++ b/frontend/src/types/hospitality.ts
+@@ -13,7 +13,8 @@
+ export type ChatMessage = { id: number; direction: string; sender_type: string; sender_phone?: string | null; message_type: string; text_content?: string | null; created_at?: string | null; };
+ export type InboxResponse = { count: number; items: InboxItem[]; };
+ export type ChatMessagesResponse = { session_id: number; items: ChatMessage[]; };
+-export type ReservationItem = { id: number; guest_name?: string | null; guest_phone: string; checkin_date?: string | null; checkout_date?: string | null; guest_count?: number | null; unit_category?: string | null; quoted_amount?: number | null; status: string; payment_status: string; payment_reference?: string | null; human_confirmation_required?: number | boolean; finance_transaction_id?: number | null; source?: string | null; external_reservation_id?: string | null; sync_status?: string | null; notes?: string | null; created_at?: string | null; updated_at?: string | null; };
++export type ReservationGuest = { id?: number; name?: string | null; cpf?: string | null; phone?: string | null; email?: string | null; city?: string | null; car_plate?: string | null; is_main?: boolean | number | null; created_at?: string | null; updated_at?: string | null; };
++export type ReservationItem = { id: number; guest_name?: string | null; guest_phone: string; checkin_date?: string | null; checkout_date?: string | null; guest_count?: number | null; unit_category?: string | null; quoted_amount?: number | null; status: string; payment_status: string; payment_reference?: string | null; human_confirmation_required?: number | boolean; finance_transaction_id?: number | null; source?: string | null; external_reservation_id?: string | null; sync_status?: string | null; notes?: string | null; created_at?: string | null; updated_at?: string | null; reservation_code?: string | null; professional_status?: string | null; total_value?: number | null; notes_internal?: string | null; main_guest_name?: string | null; main_guest_phone?: string | null; guest_document?: string | null; guest_email?: string | null; guest_city?: string | null; car_plate?: string | null; estimated_arrival?: string | null; guests?: ReservationGuest[]; guest_summary?: string | null; legacy_status?: string | null; };
+ export type ReservationResponse = { count: number; items: ReservationItem[]; };
+ export type RoomTypeItem = { id: number; code: string; name: string; category?: string | null; capacity?: number | null; base_rate?: number | null; active?: number | boolean | null; notes?: string | null; quantity_total?: number | null; bed_setup?: string | null; max_adults?: number | null; max_children?: number | null; sort_order?: number | null; created_at?: string | null; updated_at?: string | null; };
+ export type RoomTypeResponse = { count: number; items: RoomTypeItem[]; };
+@@ -87,3 +88,28 @@
+   count: number;
+   items: OccupancyMapItem[];
+ };
++
++export type ReservationCalendarItem = {
++  id: number;
++  reservation_code?: string | null;
++  room_id?: number | null;
++  room_name: string;
++  room_code?: string | null;
++  guest_name?: string | null;
++  checkin?: string | null;
++  checkout?: string | null;
++  status: string;
++  payment_status?: string | null;
++  total_value?: number | null;
++  source?: string | null;
++  guest_count?: number | null;
++  reservation: ReservationItem;
++};
++
++export type ReservationsCalendarResponse = {
++  start_date: string;
++  end_date: string;
++  rooms: RoomTypeItem[];
++  count: number;
++  items: ReservationCalendarItem[];
++};

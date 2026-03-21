@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api_auth import get_current_web_user
@@ -8,6 +8,8 @@ from app.modules.hospitality.service import (
     confirm_reservation_payment,
     criar_reserva_manual,
     inventory_snapshot,
+    get_reservation_detail,
+    get_reservations_calendar,
     get_chat_messages_for_business,
     list_chat_messages,
     list_manual_rates,
@@ -18,6 +20,8 @@ from app.modules.hospitality.service import (
     manual_rates_status_text,
     obter_hospitality_summary,
     release_session,
+    update_reservation,
+    cancel_reservation,
     send_manual_message,
     set_manual_rate,
     upsert_room_type,
@@ -25,6 +29,16 @@ from app.modules.hospitality.service import (
 )
 
 router = APIRouter(prefix='/hospitality', tags=['hospitality'])
+
+
+class ReservationGuestPayload(BaseModel):
+    name: str | None = None
+    cpf: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    city: str | None = None
+    car_plate: str | None = None
+    is_main: bool | None = False
 
 
 class ReservationCreatePayload(BaseModel):
@@ -39,6 +53,45 @@ class ReservationCreatePayload(BaseModel):
     source: str | None = 'panel'
     external_reservation_id: str | None = None
     sync_status: str | None = 'not_synced'
+    reservation_code: str | None = None
+    total_value: float | None = None
+    notes_internal: str | None = None
+    main_guest_name: str | None = None
+    main_guest_phone: str | None = None
+    guest_document: str | None = None
+    guest_email: str | None = None
+    guest_city: str | None = None
+    car_plate: str | None = None
+    estimated_arrival: str | None = None
+    guests: list[ReservationGuestPayload] | None = None
+
+
+class ReservationUpdatePayload(BaseModel):
+    guest_name: str | None = None
+    guest_phone: str | None = None
+    checkin_date: str | None = None
+    checkout_date: str | None = None
+    guest_count: int | None = None
+    unit_category: str | None = None
+    quoted_amount: float | None = None
+    status: str | None = None
+    payment_status: str | None = None
+    notes: str | None = None
+    source: str | None = None
+    external_reservation_id: str | None = None
+    sync_status: str | None = None
+    reservation_code: str | None = None
+    professional_status: str | None = None
+    total_value: float | None = None
+    notes_internal: str | None = None
+    main_guest_name: str | None = None
+    main_guest_phone: str | None = None
+    guest_document: str | None = None
+    guest_email: str | None = None
+    guest_city: str | None = None
+    car_plate: str | None = None
+    estimated_arrival: str | None = None
+    guests: list[ReservationGuestPayload] | None = None
 
 
 class BotSettingsPayload(BaseModel):
@@ -168,6 +221,41 @@ def hospitality_reservations(current_user: dict = Depends(get_current_web_user))
 def hospitality_pending_payments(current_user: dict = Depends(get_current_web_user)):
     items = list_pending_payment_confirmations(current_user['business_id'])
     return {'count': len(items), 'items': items}
+
+
+@router.get('/reservations/calendar')
+def hospitality_reservations_calendar(
+    start_date: str | None = Query(default=None),
+    end_date: str | None = Query(default=None),
+    current_user: dict = Depends(get_current_web_user),
+):
+    return get_reservations_calendar(current_user['business_id'], start_date=start_date, end_date=end_date)
+
+
+@router.get('/reservations/{reservation_id}')
+def hospitality_reservation_detail(reservation_id: int, current_user: dict = Depends(get_current_web_user)):
+    item = get_reservation_detail(current_user['business_id'], reservation_id)
+    if not item:
+        raise HTTPException(status_code=404, detail='Reserva não encontrada.')
+    return {'item': item}
+
+
+@router.put('/reservations/{reservation_id}')
+def hospitality_reservation_update(reservation_id: int, payload: ReservationUpdatePayload, current_user: dict = Depends(get_current_web_user)):
+    try:
+        item = update_reservation(current_user['business_id'], reservation_id, **payload.model_dump(exclude_none=True))
+        return {'ok': True, 'item': item}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post('/reservations/{reservation_id}/cancel')
+def hospitality_reservation_cancel(reservation_id: int, payload: ReservationUpdatePayload, current_user: dict = Depends(get_current_web_user)):
+    try:
+        item = cancel_reservation(current_user['business_id'], reservation_id, reason=payload.notes_internal or payload.notes)
+        return {'ok': True, 'item': item}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post('/reservations')

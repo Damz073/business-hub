@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Optional
+import random
+import string
+import json
 
 from app.core_services import (
     ensure_chat_session,
@@ -13,6 +16,173 @@ from app.core_services import (
 from app.database import conectar
 from app.storage import salvar_transacao
 from app.whatsapp_api import enviar_mensagem_texto
+
+
+
+PROFESSIONAL_STATUS_MAP = {
+    'lead': 'lead',
+    'quoted': 'aguardando_pagamento',
+    'confirmada': 'confirmada',
+    'checkin': 'checkin',
+    'checkout': 'checkout',
+    'cancelada': 'cancelada',
+    'bloqueada': 'bloqueada',
+}
+
+
+def _generate_reservation_code() -> str:
+    return 'RES-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+def _normalize_reservation_source(source: str | None) -> str:
+    raw = (source or 'whatsapp').strip().lower()
+    mapping = {
+        'panel': 'balcao',
+        'admin_manual': 'balcao',
+        'manual': 'balcao',
+        'desk': 'balcao',
+        'frontdesk': 'balcao',
+        'pms_voa': 'site',
+    }
+    return mapping.get(raw, raw or 'whatsapp')
+
+
+def _normalize_reservation_status(status: str | None, payment_status: str | None = None) -> str:
+    raw = (status or '').strip().lower()
+    if raw in {'lead', 'aguardando_pagamento', 'confirmada', 'checkin', 'checkout', 'cancelada', 'bloqueada'}:
+        return raw
+    if raw == 'quoted':
+        return 'aguardando_pagamento'
+    if raw == 'canceled':
+        return 'cancelada'
+    if raw == 'confirmed':
+        return 'confirmada'
+    if raw == 'blocked':
+        return 'bloqueada'
+    if raw == 'pending_payment':
+        return 'aguardando_pagamento'
+    if (payment_status or '').lower() == 'confirmado':
+        return 'confirmada'
+    return 'lead'
+
+
+def _serialize_guests(guests: list[dict] | None) -> str:
+    return json.dumps(guests or [], ensure_ascii=False)
+
+
+def _deserialize_guests(raw) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _build_guest_records(main_name: str | None, main_phone: str | None, main_email: str | None = None, guests: list[dict] | None = None, cpf: str | None = None, city: str | None = None, car_plate: str | None = None):
+    records: list[dict] = []
+    if main_name or main_phone or main_email or cpf or city or car_plate:
+        records.append({
+            'name': main_name,
+            'phone': main_phone,
+            'email': main_email,
+            'cpf': cpf,
+            'city': city,
+            'car_plate': car_plate,
+            'is_main': True,
+        })
+    for guest in guests or []:
+        if not isinstance(guest, dict):
+            continue
+        item = {
+            'name': guest.get('name') or guest.get('nome'),
+            'phone': guest.get('phone') or guest.get('telefone'),
+            'email': guest.get('email'),
+            'cpf': guest.get('cpf'),
+            'city': guest.get('city') or guest.get('cidade'),
+            'car_plate': guest.get('car_plate') or guest.get('placa_do_carro') or guest.get('placa'),
+            'is_main': bool(guest.get('is_main')),
+        }
+        if any(item.values()):
+            records.append(item)
+    return records
+
+
+def _replace_reservation_guests(cur, reservation_id: int, main_name: str | None, main_phone: str | None, main_email: str | None = None, guests: list[dict] | None = None, cpf: str | None = None, city: str | None = None, car_plate: str | None = None):
+    cur.execute('DELETE FROM reservation_guests WHERE reservation_request_id = ?', (reservation_id,))
+    for guest in _build_guest_records(main_name, main_phone, main_email, guests=guests, cpf=cpf, city=city, car_plate=car_plate):
+        cur.execute(
+            """
+            INSERT INTO reservation_guests (
+                reservation_request_id, name, cpf, phone, email, city, car_plate, is_main, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (reservation_id, guest.get('name'), guest.get('cpf'), guest.get('phone'), guest.get('email'), guest.get('city'), guest.get('car_plate'), 1 if guest.get('is_main') else 0),
+        )
+
+
+def _fetch_reservation_guests(cur, reservation_id: int):
+    cur.execute(
+        """
+        SELECT id, name, cpf, phone, email, city, car_plate, is_main, created_at, updated_at
+        FROM reservation_guests
+        WHERE reservation_request_id = ?
+        ORDER BY is_main DESC, id ASC
+        """,
+        (reservation_id,),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+def _enrich_reservation(row: dict, cur):
+    item = dict(row)
+    item['source'] = _normalize_reservation_source(item.get('source'))
+    item['status'] = _normalize_reservation_status(item.get('professional_status') or item.get('status'), item.get('payment_status'))
+    item['legacy_status'] = item.get('status')
+    item['professional_status'] = item['status']
+    item['reservation_code'] = item.get('reservation_code') or f"RES-{item['id']:06d}"
+    item['total_value'] = float(item.get('total_value') or item.get('quoted_amount') or 0)
+    item['quoted_amount'] = float(item.get('quoted_amount') or item.get('total_value') or 0)
+    item['main_guest_name'] = item.get('main_guest_name') or item.get('guest_name')
+    item['main_guest_phone'] = item.get('main_guest_phone') or item.get('guest_phone')
+    item['guest_document'] = item.get('guest_document')
+    item['guest_email'] = item.get('guest_email')
+    item['guest_city'] = item.get('guest_city')
+    item['car_plate'] = item.get('car_plate')
+    item['estimated_arrival'] = item.get('estimated_arrival')
+    item['notes_internal'] = item.get('notes_internal')
+    item['guest_list_json'] = item.get('guest_list_json') or '[]'
+    guests = _fetch_reservation_guests(cur, item['id'])
+    if not guests:
+        guests = _build_guest_records(item.get('main_guest_name') or item.get('guest_name'), item.get('main_guest_phone') or item.get('guest_phone'), item.get('guest_email'), guests=_deserialize_guests(item.get('guest_list_json')), cpf=item.get('guest_document'), city=item.get('guest_city'), car_plate=item.get('car_plate'))
+    item['guests'] = guests
+    item['guest_summary'] = ', '.join([g.get('name') for g in guests if g.get('name')][:3]) or (item.get('main_guest_name') or item.get('guest_name') or item.get('guest_phone'))
+    return item
+
+
+def get_reservation_detail(business_id: int, reservation_id: int):
+    conn = conectar(); cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
+               unit_category, quoted_amount, status, payment_status, payment_reference, human_confirmation_required,
+               notes, finance_transaction_id, source, external_reservation_id, sync_status, created_at, updated_at,
+               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
+               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
+        FROM reservation_requests
+        WHERE id = ? AND business_id = ? LIMIT 1
+        """,
+        (reservation_id, business_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return None
+    item = _enrich_reservation(dict(row), cur)
+    conn.close()
+    return item
+
 
 DEFAULT_ROOM_TYPES = [
     {'code': 'STD-CASAL', 'name': 'Standard Casal', 'category': 'standard', 'capacity': 2, 'base_rate': 260.0, 'quantity_total': 8, 'bed_setup': '1 cama casal', 'notes': 'Tipologia padrão sugerida para o MVP.'},
@@ -260,17 +430,22 @@ def listar_chat_sessions(business_id: int, status: str | None = None):
 def listar_reservas(business_id: int, status: str | None = None):
     conn = conectar(); cur = conn.cursor()
     query = """
-        SELECT id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
+        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
                unit_category, quoted_amount, status, payment_status, payment_reference,
                human_confirmation_required, notes, finance_transaction_id, source,
-               external_reservation_id, sync_status, created_at, updated_at
+               external_reservation_id, sync_status, created_at, updated_at,
+               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
+               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
         FROM reservation_requests WHERE business_id = ?
     """
     params = [business_id]
     if status:
-        query += ' AND status = ?'; params.append(status)
-    query += ' ORDER BY datetime(updated_at) DESC, id DESC LIMIT 100'
-    cur.execute(query, tuple(params)); items = [dict(r) for r in cur.fetchall()]; conn.close(); return items
+        query += ' AND (professional_status = ? OR status = ?)'; params.extend([status, status])
+    query += ' ORDER BY date(checkin_date) ASC, datetime(updated_at) DESC, id DESC LIMIT 200'
+    cur.execute(query, tuple(params))
+    items = [_enrich_reservation(dict(r), cur) for r in cur.fetchall()]
+    conn.close()
+    return items
 
 
 def criar_reserva_manual(business_id: int, guest_name: str, guest_phone: str, checkin_date: str | None, checkout_date: str | None,
@@ -346,11 +521,11 @@ def confirm_reservation_payment(reservation_id: int, business_id: int, restauran
     finance_transaction_id = reservation.get('finance_transaction_id')
     if not finance_transaction_id:
         finance_transaction_id = salvar_transacao(restaurant_id, {'tipo': 'entrada', 'categoria': 'hospedagem', 'valor': float(reservation.get('quoted_amount') or 0), 'descricao': f"Reserva {reservation.get('guest_name') or reservation.get('guest_phone')}"})
-    cur.execute("UPDATE reservation_requests SET status = 'confirmada', payment_status = 'confirmado', finance_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (finance_transaction_id, reservation_id))
+    cur.execute("UPDATE reservation_requests SET status = 'confirmada', professional_status = 'confirmada', payment_status = 'confirmado', finance_transaction_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (finance_transaction_id, reservation_id))
     cur.execute("UPDATE payment_requests SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP WHERE reservation_request_id = ?", (reservation_id,))
     cur.execute("SELECT session_id FROM reservation_requests WHERE id = ?", (reservation_id,))
     session_row = cur.fetchone()
-    conn.commit(); cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,)); result = dict(cur.fetchone()); conn.close()
+    conn.commit(); cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,)); result = _enrich_reservation(dict(cur.fetchone()), cur); conn.close()
     if session_row and session_row['session_id']:
         update_chat_session_status(session_row['session_id'], 'closed', handoff_reason='Pagamento confirmado')
         try:
@@ -359,6 +534,108 @@ def confirm_reservation_payment(reservation_id: int, business_id: int, restauran
             pass
     notify_result = _notify_customer_payment_confirmed(result)
     return {'item': result, 'finance_transaction_id': finance_transaction_id, 'confirmed_by': actor_name, 'customer_notify': notify_result}
+
+
+def update_reservation(business_id: int, reservation_id: int, **fields):
+    allowed = {
+        'guest_name', 'guest_phone', 'checkin_date', 'checkout_date', 'guest_count', 'unit_category', 'quoted_amount',
+        'status', 'payment_status', 'notes', 'source', 'external_reservation_id', 'sync_status', 'reservation_code',
+        'professional_status', 'total_value', 'notes_internal', 'main_guest_name', 'main_guest_phone', 'guest_document',
+        'guest_email', 'guest_city', 'car_plate', 'estimated_arrival', 'guest_list_json'
+    }
+    payload = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    guests = fields.get('guests')
+    if 'source' in payload:
+        payload['source'] = _normalize_reservation_source(payload['source'])
+    if 'professional_status' in payload or 'status' in payload or 'payment_status' in fields:
+        payload['professional_status'] = _normalize_reservation_status(payload.get('professional_status') or payload.get('status'), fields.get('payment_status') or payload.get('payment_status'))
+    conn = conectar(); cur = conn.cursor()
+    cur.execute("SELECT * FROM reservation_requests WHERE id = ? AND business_id = ? LIMIT 1", (reservation_id, business_id))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError('Reserva não encontrada.')
+    current = dict(row)
+    if not payload.get('reservation_code'):
+        payload['reservation_code'] = current.get('reservation_code') or _generate_reservation_code()
+    if 'total_value' not in payload:
+        payload['total_value'] = fields.get('quoted_amount', current.get('total_value') or current.get('quoted_amount') or 0)
+    if guests is not None:
+        payload['guest_list_json'] = _serialize_guests(guests)
+    parts = [f"{k} = ?" for k in payload]
+    values = list(payload.values())
+    if parts:
+        cur.execute(f"UPDATE reservation_requests SET {', '.join(parts)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND business_id = ?", tuple(values + [reservation_id, business_id]))
+    _replace_reservation_guests(cur, reservation_id, payload.get('main_guest_name', current.get('main_guest_name') or current.get('guest_name')), payload.get('main_guest_phone', current.get('main_guest_phone') or current.get('guest_phone')), payload.get('guest_email', current.get('guest_email')), guests=guests if guests is not None else _deserialize_guests(payload.get('guest_list_json') or current.get('guest_list_json')), cpf=payload.get('guest_document', current.get('guest_document')), city=payload.get('guest_city', current.get('guest_city')), car_plate=payload.get('car_plate', current.get('car_plate')))
+    conn.commit()
+    cur.execute("SELECT * FROM reservation_requests WHERE id = ?", (reservation_id,))
+    item = _enrich_reservation(dict(cur.fetchone()), cur)
+    conn.close()
+    return item
+
+
+def cancel_reservation(business_id: int, reservation_id: int, reason: str | None = None):
+    return update_reservation(business_id, reservation_id, status='cancelada', professional_status='cancelada', payment_status='cancelado' if reason else None, notes_internal=reason)
+
+
+def get_reservations_calendar(business_id: int, start_date: str | None = None, end_date: str | None = None):
+    rooms = list_room_types(business_id)
+    if not start_date:
+        today = date.today()
+        start_date = today.replace(day=1).isoformat()
+    if not end_date:
+        start = datetime.fromisoformat(start_date)
+        month = start.month + 1
+        year = start.year + (1 if month == 13 else 0)
+        month = 1 if month == 13 else month
+        next_month = start.replace(year=year, month=month, day=1)
+        end_date = (next_month + timedelta(days=14)).date().isoformat()
+    conn = conectar(); cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
+               unit_category, quoted_amount, status, payment_status, payment_reference,
+               human_confirmation_required, notes, finance_transaction_id, source,
+               external_reservation_id, sync_status, created_at, updated_at,
+               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
+               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
+        FROM reservation_requests
+        WHERE business_id = ?
+          AND COALESCE(checkin_date, date(created_at)) <= ?
+          AND COALESCE(checkout_date, checkin_date, date(created_at)) >= ?
+        ORDER BY date(checkin_date) ASC, id ASC
+        """,
+        (business_id, end_date, start_date),
+    )
+    reservations = [_enrich_reservation(dict(r), cur) for r in cur.fetchall()]
+    conn.close()
+    room_index = {room['code']: room for room in rooms}
+    items = []
+    for res in reservations:
+        room = room_index.get(res.get('unit_category') or '') or {}
+        items.append({
+            'id': res['id'],
+            'reservation_code': res.get('reservation_code'),
+            'room_id': room.get('id'),
+            'room_name': room.get('name') or res.get('unit_category') or 'Sem quarto',
+            'room_code': res.get('unit_category'),
+            'guest_name': res.get('main_guest_name') or res.get('guest_name'),
+            'checkin': res.get('checkin_date'),
+            'checkout': res.get('checkout_date'),
+            'status': res.get('professional_status') or res.get('status'),
+            'payment_status': res.get('payment_status'),
+            'total_value': res.get('total_value') or res.get('quoted_amount') or 0,
+            'source': res.get('source'),
+            'guest_count': res.get('guest_count'),
+            'reservation': res,
+        })
+    return {
+        'start_date': start_date,
+        'end_date': end_date,
+        'rooms': rooms,
+        'count': len(items),
+        'items': items,
+    }
 
 
 def _count_reservations_by_state(business_id: int, unit_category: str | None = None):
