@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -357,7 +358,7 @@ def reservation_detail(
 ):
     item = get_reservation_detail(current_user["business_id"], reservation_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Reserva não encontrada")
+        raise HTTPException(status_code=404, detail="Reserva nao encontrada")
     return {"item": item}
 # ===== FIM ROTAS =====
 
