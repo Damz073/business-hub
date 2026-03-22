@@ -579,62 +579,104 @@ def cancel_reservation(business_id: int, reservation_id: int, reason: str | None
 
 
 def get_reservations_calendar(business_id: int, start_date: str | None = None, end_date: str | None = None):
-    rooms = list_room_types(business_id)
-    if not start_date:
-        today = date.today()
-        start_date = today.replace(day=1).isoformat()
-    if not end_date:
-        start = datetime.fromisoformat(start_date)
-        month = start.month + 1
-        year = start.year + (1 if month == 13 else 0)
-        month = 1 if month == 13 else month
-        next_month = start.replace(year=year, month=month, day=1)
-        end_date = (next_month + timedelta(days=14)).date().isoformat()
-    conn = conectar(); cur = conn.cursor()
+    conn = conectar()
+    cur = conn.cursor()
+
+    today = date.today()
+    start = date.fromisoformat(start_date) if start_date else today.replace(day=1)
+    end = date.fromisoformat(end_date) if end_date else (start + timedelta(days=30))
+
+    ensure_sample_units_for_hospitality(business_id)
+
     cur.execute(
         """
-        SELECT id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
-               unit_category, quoted_amount, status, payment_status, payment_reference,
-               human_confirmation_required, notes, finance_transaction_id, source,
-               external_reservation_id, sync_status, created_at, updated_at,
-               reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
-               guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
+        SELECT
+            id,
+            code,
+            name,
+            category,
+            capacity,
+            base_rate,
+            quantity_total,
+            active
+        FROM accommodation_units
+        WHERE business_id = ?
+        ORDER BY sort_order ASC, name ASC, id ASC
+        """,
+        (business_id,),
+    )
+    rooms = [dict(r) for r in cur.fetchall()]
+
+    cur.execute(
+        """
+        SELECT
+            id, business_id, session_id, guest_name, guest_phone, checkin_date, checkout_date, guest_count,
+            unit_category, quoted_amount, status, payment_status, payment_reference, human_confirmation_required,
+            notes, finance_transaction_id, source, external_reservation_id, sync_status, created_at, updated_at,
+            reservation_code, professional_status, total_value, notes_internal, main_guest_name, main_guest_phone,
+            guest_document, guest_email, guest_city, car_plate, estimated_arrival, guest_list_json
         FROM reservation_requests
         WHERE business_id = ?
-          AND COALESCE(checkin_date, date(created_at)) <= ?
-          AND COALESCE(checkout_date, checkin_date, date(created_at)) >= ?
+          AND date(checkin_date) <= date(?)
+          AND date(checkout_date) >= date(?)
         ORDER BY date(checkin_date) ASC, id ASC
         """,
-        (business_id, end_date, start_date),
+        (business_id, end.isoformat(), start.isoformat()),
     )
-    reservations = [_enrich_reservation(dict(r), cur) for r in cur.fetchall()]
-    conn.close()
-    room_index = {room['code']: room for room in rooms}
+    reservation_rows = cur.fetchall()
+
     items = []
-    for res in reservations:
-        room = room_index.get(res.get('unit_category') or '') or {}
+    for row in reservation_rows:
+        item = _enrich_reservation(dict(row), cur)
+
+        unit_category = (item.get("unit_category") or "").strip()
+        matched_room = next(
+            (
+                room for room in rooms
+                if unit_category in {
+                    str(room.get("code") or "").strip(),
+                    str(room.get("name") or "").strip(),
+                    str(room.get("category") or "").strip(),
+                }
+            ),
+            None,
+        )
+
         items.append({
-            'id': res['id'],
-            'reservation_code': res.get('reservation_code'),
-            'room_id': room.get('id'),
-            'room_name': room.get('name') or res.get('unit_category') or 'Sem quarto',
-            'room_code': res.get('unit_category'),
-            'guest_name': res.get('main_guest_name') or res.get('guest_name'),
-            'checkin': res.get('checkin_date'),
-            'checkout': res.get('checkout_date'),
-            'status': res.get('professional_status') or res.get('status'),
-            'payment_status': res.get('payment_status'),
-            'total_value': res.get('total_value') or res.get('quoted_amount') or 0,
-            'source': res.get('source'),
-            'guest_count': res.get('guest_count'),
-            'reservation': res,
+            "id": item["id"],
+            "reservation_code": item.get("reservation_code"),
+            "room_id": matched_room.get("id") if matched_room else None,
+            "room_code": matched_room.get("code") if matched_room else None,
+            "room_name": matched_room.get("name") if matched_room else (item.get("unit_category") or "Sem tipologia"),
+            "room_label": matched_room.get("name") if matched_room else (item.get("unit_category") or "Sem tipologia"),
+            "unit_category": item.get("unit_category"),
+            "guest_name": item.get("guest_name"),
+            "main_guest_name": item.get("main_guest_name"),
+            "phone": item.get("main_guest_phone") or item.get("guest_phone"),
+            "checkin": item.get("checkin_date"),
+            "checkout": item.get("checkout_date"),
+            "status": item.get("professional_status") or item.get("status"),
+            "calendar_status": item.get("professional_status") or item.get("status"),
+            "payment_status": item.get("payment_status"),
+            "total_value": item.get("total_value") or item.get("quoted_amount") or 0,
+            "notes_internal": item.get("notes_internal"),
+            "source": item.get("source"),
+            "guests": item.get("guests", []),
+            "reservation": item,
         })
+
+    conn.close()
+
     return {
-        'start_date': start_date,
-        'end_date': end_date,
-        'rooms': rooms,
-        'count': len(items),
-        'items': items,
+        "range": {
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        },
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "count": len(items),
+        "rooms": rooms,
+        "items": items,
     }
 
 
@@ -948,95 +990,3 @@ def prompt_daily_rates_if_needed():
         upsert_bot_settings(business_id, last_rate_prompt_at=_now_iso())
         sent += 1
     return sent
-
-
-# ===== FASE 18 - CALENDARIO PMS =====
-from datetime import date, timedelta
-
-def calendar_status_color(status: str) -> str:
-    mapping = {
-        "confirmada": "confirmed",
-        "aguardando_pagamento": "pending_payment",
-        "lead": "pending_payment",
-        "cancelada": "problem",
-        "bloqueada": "blocked",
-        "checkin": "confirmed",
-        "checkout": "confirmed",
-    }
-    return mapping.get(status, "pending_payment")
-
-def get_reservation_detail(business_id: int, reservation_id: int):
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    row = cur.execute(
-        "SELECT * FROM reservation_requests WHERE id = ? AND business_id = ?",
-        (reservation_id, business_id),
-    ).fetchone()
-
-    if not row:
-        conn.close()
-        return None
-
-    data = dict(row)
-    data["guests"] = deserialize_guests(data.get("guest_list_json"))
-
-    conn.close()
-    return data
-
-def get_reservations_calendar(business_id: int, start_date: str | None = None, end_date: str | None = None):
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    today = date.today()
-    start = date.fromisoformat(start_date) if start_date else today.replace(day=1)
-    end = date.fromisoformat(end_date) if end_date else (start + timedelta(days=30))
-
-    rooms = cur.execute(
-        "SELECT id, name, category FROM rooms WHERE business_id = ?",
-        (business_id,),
-    ).fetchall()
-
-    reservations = cur.execute(
-        '''
-        SELECT * FROM reservation_requests
-        WHERE business_id = ?
-        AND date(checkin_date) <= date(?)
-        AND date(checkout_date) >= date(?)
-        ''',
-        (business_id, end.isoformat(), start.isoformat()),
-    ).fetchall()
-
-    items = []
-    for row in reservations:
-        item = dict(row)
-        guests = deserialize_guests(item.get("guest_list_json"))
-        status = item.get("professional_status") or "lead"
-
-        items.append({
-            "id": item["id"],
-            "reservation_code": item.get("reservation_code"),
-            "room_label": item.get("unit_category"),
-            "main_guest_name": item.get("main_guest_name"),
-            "phone": item.get("main_guest_phone"),
-            "checkin": item.get("checkin_date"),
-            "checkout": item.get("checkout_date"),
-            "status": status,
-            "calendar_status": calendar_status_color(status),
-            "payment_status": item.get("payment_status"),
-            "total_value": item.get("total_value"),
-            "guests": guests,
-        })
-
-    conn.close()
-
-    return {
-        "range": {
-            "start_date": start.isoformat(),
-            "end_date": end.isoformat(),
-        },
-        "rooms": [dict(r) for r in rooms],
-        "items": items,
-    }
-# ===== FIM FASE 18 =====
-
